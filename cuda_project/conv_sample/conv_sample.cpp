@@ -123,6 +123,7 @@ using n, c, h, w flags
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/sysinfo.h>
+
 static double
 second(void) {
     struct timeval tv;
@@ -235,16 +236,22 @@ printPerf(double cudaTime,
           const char* cpuLib,
           double cpuTime,
           double cpuGflops,
-          double cpuBandwithGb) {
-    printf("^^^^ CUDA : elapsed = %g sec,  ", cudaTime);
-    if (cudaGflops > 0) printf("Gflops = %.3f ", cudaGflops);
-    if (cudaBandwithGb > 0) printf("Bandwidth = %.3f ", cudaBandwithGb);
-    printf("\n");
-    if (cpuLib) {
-        printf("^^^^%s : elapsed = %g sec, ", cpuLib, cpuTime);
-        if (cpuGflops > 0) printf("Gflops = %.3f ", cpuGflops);
-        if (cpuBandwithGb > 0) printf("Bandwidth = %.3f, ", cpuBandwithGb);
-        printf("Speedup %.2f\n", cpuTime / cudaTime);
+          double cpuBandwithGb,
+          const char* algo,
+          bool verbose) {
+    if (verbose) {
+        printf("^^^^ CUDA %s: elapsed = %g sec,  ", algo, cudaTime);
+        if (cudaGflops > 0) printf("Gflops = %.3f ", cudaGflops);
+        if (cudaBandwithGb > 0) printf("Bandwidth = %.3f ", cudaBandwithGb);
+        printf("\n");
+        if (cpuLib) {
+            printf("^^^^%s : elapsed = %g sec, ", cpuLib, cpuTime);
+            if (cpuGflops > 0) printf("Gflops = %.3f ", cpuGflops);
+            if (cpuBandwithGb > 0) printf("Bandwidth = %.3f, ", cpuBandwithGb);
+            printf("Speedup %.2f\n", cpuTime / cudaTime);
+        }
+    } else {
+        printf("%0.10f\n", cudaTime);
     }
 }
 
@@ -764,7 +771,9 @@ doConv(cudnnHandle_t handle_,
        const int* convstrideA,
        const int* padA,
        const int* dilationA,
-       const int benchmark) {
+       const int benchmark,
+       bool warmup,
+       bool verbose) {
     int outsize          = outstrideA[0] * outdimA[0];
     T_ELEM* hostOfromdev = (T_ELEM*)calloc(outsize, sizeof(hostO[0]));
 
@@ -800,13 +809,15 @@ doConv(cudnnHandle_t handle_,
     // host time end
     stop = second();
 
-    printPerf((stop - start), 0, 0, 0, 0, 0, 0);
+    if (!warmup)
+        printPerf((stop - start), 0, 0, 0, 0, 0, 0, "doConv", verbose);
     checkCudaErr(cudaMemcpy(hostOfromdev, devPtrO, sizeof(hostO[0]) * outsize, cudaMemcpyDeviceToHost));
     checkCudaErr(cudaDeviceSynchronize());
 
     if (!benchmark) {
         // Pass in resize factor for the cpu reference solution, this is the number of packed variables in each element
         // of the tensor
+        printf("Started CPU\n");
         if (filterFormat == CUDNN_TENSOR_NCHW_VECT_C) {
             if (dataType == CUDNN_DATA_INT8x4) {  // resizeFactor = 4
                 conv_cpu_ref<T_ELEM, int32_t>(hostI,
@@ -864,7 +875,7 @@ doConv(cudnnHandle_t handle_,
                                         dilationA,
                                         4);
         }
-
+        printf("Finished CPU\n");
         for (int index = 0; index < outsize; index++) {
             float diff         = getError(hostOfromdev[index], hostO[index]);
             if (diff < 0) diff = -diff;
@@ -909,7 +920,9 @@ doDgrad(cudnnHandle_t handle_,
         const int* dilationA,
         const int benchmark,
         const bool fold,
-        cudnnConvolutionMode_t mode) {
+        cudnnConvolutionMode_t mode,
+        bool warmup,
+        bool verbose) {
     int insize           = strideA[0] * dimA[0];
     T_ELEM* hostIfromdev = (T_ELEM*)calloc(insize, sizeof(hostI[0]));
 
@@ -1089,7 +1102,8 @@ doDgrad(cudnnHandle_t handle_,
     }
 
     // Run reference code and check for errors
-    printPerf(stop - start, 0, 0, 0, 0, 0, 0);
+    if (!warmup)
+        printPerf(stop - start, 0, 0, 0, 0, 0, 0, "dGrad", verbose);
     checkCudaErr(cudaMemcpy(hostIfromdev, devPtrI, sizeof(hostI[0]) * insize, cudaMemcpyDeviceToHost));
     checkCudaErr(cudaDeviceSynchronize());
 
@@ -1151,7 +1165,9 @@ doWgrad(cudnnHandle_t handle_,
         const int* convstrideA,
         const int* padA,
         const int* dilationA,
-        const int benchmark) {
+        const int benchmark,
+        bool warmup,
+        bool verbose) {
     int filsize                          = filterdimA[0] * filterdimA[1] * filterdimA[2] * filterdimA[3];
     T_ELEM* hostFfromdev                 = (T_ELEM*)calloc(filsize, sizeof(hostF[0]));
     cudnnConvolutionBwdFilterAlgo_t algo = CUDNN_CONVOLUTION_BWD_FILTER_ALGO_1;
@@ -1185,7 +1201,8 @@ doWgrad(cudnnHandle_t handle_,
     checkCudaErr(cudaDeviceSynchronize());
     stop = second();
 
-    printPerf(stop - start, 0, 0, 0, 0, 0, 0);
+    if (!warmup)
+        printPerf(stop - start, 0, 0, 0, 0, 0, 0, "wGrad", verbose);
     checkCudaErr(cudaMemcpy(hostFfromdev, devPtrF, sizeof(hostF[0]) * filsize, cudaMemcpyDeviceToHost));
     checkCudaErr(cudaDeviceSynchronize());
 
@@ -1234,7 +1251,9 @@ doTest(int algo,
        int mathType,
        int benchmark,
        bool fold,
-       cudnnConvolutionMode_t mode) {
+       cudnnConvolutionMode_t mode,
+       bool warmup,
+       bool verbose) {
     cudnnHandle_t handle_;
     T_ELEM* devPtrI          = NULL;
     T_ELEM* devPtrF          = NULL;
@@ -1301,22 +1320,24 @@ doTest(int algo,
         }
     }
 
-    printf("====USER DIMENSIONS====\n");
-    printf("input dims are %d, %d, %d, %d\n", dimA[0], dimA[1], dimA[2], dimA[3]);
-    printf("filter dims are %d, %d, %d, %d\n", filterdimA[0], filterdimA[1], filterdimA[2], filterdimA[3]);
-    printf("output dims are %d, %d, %d, %d\n", outdimA[0], outdimA[1], outdimA[2], outdimA[3]);
-    printf("====PADDING DIMENSIONS====\n");
-    printf("padded input dims are %d, %d, %d, %d\n", dimA_padded[0], dimA_padded[1], dimA_padded[2], dimA_padded[3]);
-    printf("padded filter dims are %d, %d, %d, %d\n",
-           filterdimA_padded[0],
-           filterdimA_padded[1],
-           filterdimA_padded[2],
-           filterdimA_padded[3]);
-    printf("padded output dims are %d, %d, %d, %d\n",
-           outdimA_padded[0],
-           outdimA_padded[1],
-           outdimA_padded[2],
-           outdimA_padded[3]);
+    if (verbose) {
+        printf("====USER DIMENSIONS====\n");
+        printf("input dims are %d, %d, %d, %d\n", dimA[0], dimA[1], dimA[2], dimA[3]);
+        printf("filter dims are %d, %d, %d, %d\n", filterdimA[0], filterdimA[1], filterdimA[2], filterdimA[3]);
+        printf("output dims are %d, %d, %d, %d\n", outdimA[0], outdimA[1], outdimA[2], outdimA[3]);
+        printf("====PADDING DIMENSIONS====\n");
+        printf("padded input dims are %d, %d, %d, %d\n", dimA_padded[0], dimA_padded[1], dimA_padded[2], dimA_padded[3]);
+        printf("padded filter dims are %d, %d, %d, %d\n",
+               filterdimA_padded[0],
+               filterdimA_padded[1],
+               filterdimA_padded[2],
+               filterdimA_padded[3]);
+        printf("padded output dims are %d, %d, %d, %d\n",
+               outdimA_padded[0],
+               outdimA_padded[1],
+               outdimA_padded[2],
+               outdimA_padded[3]);
+    }
 
     checkCudnnErr(cudnnCreate(&handle_));
 
@@ -1387,7 +1408,8 @@ doTest(int algo,
     }
 
     if (algo == 0) {
-        printf("Testing conv\n");
+        if (verbose)
+            printf("Testing conv\n");
         numErrors = doConv(handle_,
                            devPtrI,
                            devPtrReorderedF,
@@ -1411,9 +1433,12 @@ doTest(int algo,
                            convstrideA,
                            padA,
                            dilationA,
-                           benchmark);
+                           benchmark,
+                           warmup,
+                           verbose);
     } else if (algo == 1) {
-        printf("Testing dgrad\n");
+        if (verbose)
+            printf("Testing dgrad\n");
         numErrors = doDgrad(handle_,
                             devPtrI,
                             devPtrF,
@@ -1438,9 +1463,12 @@ doTest(int algo,
                             dilationA,
                             benchmark,
                             fold,
-                            mode);
+                            mode,
+                            warmup,
+                            verbose);
     } else {
-        printf("Testing wgrad\n");
+        if (verbose)
+            printf("Testing wgrad\n");
         numErrors = doWgrad(handle_,
                             devPtrI,
                             devPtrF,
@@ -1463,7 +1491,9 @@ doTest(int algo,
                             convstrideA,
                             padA,
                             dilationA,
-                            benchmark);
+                            benchmark,
+                            warmup,
+                            verbose);
     }
 
     if (!benchmark) {
@@ -1569,6 +1599,7 @@ baseFile(char* fname) {
 
 int
 main(int argc, char** argv) {
+    bool verbose = true;
     int algo                  = 0;
     int mathType              = 0;
     int benchmark             = 0;
@@ -1588,11 +1619,11 @@ main(int argc, char** argv) {
 
     cudnnTransformNCHWtype transformNCHWType = CUDNN_NO_TRANSFORM;
 
-    printf("Executing: %s", baseFile(argv[0]));
-    for (int i = 1; i < argc; i++) {
-        printf(" %s", argv[i]);
-    }
-    printf("\n");
+    // printf("Executing: %s", baseFile(argv[0]));
+    // for (int i = 1; i < argc; i++) {
+    //     printf(" %s", argv[i]);
+    // }
+    // printf("\n");
 
     int error = 0;
     argc -= 1;
@@ -1614,6 +1645,9 @@ main(int argc, char** argv) {
                         userSpecifiedDataType = (cudnnDataType_t)(atoi(argv[0] + 1 + strlen("dataType")));
                         selectDataType(userSpecifiedDataType, dataType, error);
                     }
+                    break;
+                case 'e':
+                    verbose = false;
                     break;
                 case 'f':
                     if (strncmp(argv[0] + 1, "filterFormat", strlen("filterFormat")) == 0) {
@@ -1690,6 +1724,7 @@ main(int argc, char** argv) {
     }
 
     int device, ret = 0;
+    bool warmup;
     struct cudaDeviceProp devProp;
     cudaGetDevice(&device);
     cudaGetDeviceProperties(&devProp, device);
@@ -1699,23 +1734,47 @@ main(int argc, char** argv) {
         ret += transformNCHWLayout(dimA, transformNCHWType);
     } else if (filterFormat != CUDNN_TENSOR_NCHW_VECT_C) {
         if (filterFormat == CUDNN_TENSOR_NCHW) {
-            printf("Using format CUDNN_TENSOR_NCHW (for INT8x4 and INT8x32 tests use CUDNN_TENSOR_NCHW_VECT_C)\n");
+            if (verbose)
+                printf("Using format CUDNN_TENSOR_NCHW (for INT8x4 and INT8x32 tests use CUDNN_TENSOR_NCHW_VECT_C)\n");
         } else if (filterFormat == CUDNN_TENSOR_NHWC) {
-            printf("Using format CUDNN_TENSOR_NHWC (for INT8x4 and INT8x32 tests use CUDNN_TENSOR_NCHW_VECT_C)\n");
+            if (verbose)
+                printf("Using format CUDNN_TENSOR_NHWC (for INT8x4 and INT8x32 tests use CUDNN_TENSOR_NCHW_VECT_C)\n");
         } else {
-            printf("This sample only supports CUDNN_TENSOR_NCHW, CUDNN_TENSOR_NHWC, and CUDNN_TENSOR_NCHW_VECT_C!\n");
+            if (verbose)
+                printf("This sample only supports CUDNN_TENSOR_NCHW, CUDNN_TENSOR_NHWC, and CUDNN_TENSOR_NCHW_VECT_C!\n");
             return 0;
         }
+        if (dataType == CUDNN_DATA_FLOAT) {
+            if (verbose)
+                printf("Testing single precision\n");
+            warmup = true;
+            ret += doTest<float>(
+                algo, dimA, padA, convstrideA, filterdimA, filterFormat, CUDNN_DATA_FLOAT, mathType, benchmark, fold, mode, warmup, verbose);
+            warmup = false;
+            ret += doTest<float>(
+                algo, dimA, padA, convstrideA, filterdimA, filterFormat, CUDNN_DATA_FLOAT, mathType, benchmark, fold, mode, warmup, verbose);
+        } else if (dataType == CUDNN_DATA_HALF) {
+            if (verbose)
+                printf("Testing half precision (math in single precision)\n");
+            warmup = true;
+            ret += doTest<half1>(
+                algo, dimA, padA, convstrideA, filterdimA, filterFormat, CUDNN_DATA_HALF, mathType, benchmark, fold, mode, warmup, verbose);
+            warmup = false;
+            ret += doTest<half1>(
+                algo, dimA, padA, convstrideA, filterdimA, filterFormat, CUDNN_DATA_HALF, mathType, benchmark, fold, mode, warmup, verbose);
+        }
 
-        printf("Testing single precision\n");
-        ret += doTest<float>(
-            algo, dimA, padA, convstrideA, filterdimA, filterFormat, CUDNN_DATA_FLOAT, mathType, benchmark, fold, mode);
-        printf("Testing half precision (math in single precision)\n");
-        ret += doTest<half1>(
-            algo, dimA, padA, convstrideA, filterdimA, filterFormat, CUDNN_DATA_HALF, mathType, benchmark, fold, mode);
+        // printf("Testing single precision\n");
+        // ret += doTest<float>(
+        //     algo, dimA, padA, convstrideA, filterdimA, filterFormat, CUDNN_DATA_FLOAT, mathType, benchmark, fold, mode);
+        // printf("Testing half precision (math in single precision)\n");
+        // ret += doTest<half1>(
+        //     algo, dimA, padA, convstrideA, filterdimA, filterFormat, CUDNN_DATA_HALF, mathType, benchmark, fold, mode);
+
     } else {
-        printf(
-            "Using format CUDNN_TENSOR_NCHW_VECT_C (for single and double precision tests use a different format)\n");
+        if (verbose)
+            printf(
+                "Using format CUDNN_TENSOR_NCHW_VECT_C (for single and double precision tests use a different format)\n");
         if (algo == 0 && filterdimA[0] % 32 == 0 &&
             filterdimA[1] % 32 == 0) {  // Only convolution and filter input feature map count ('c') and output feature
                                         // map ('k') should be multiple of 32
@@ -1725,35 +1784,75 @@ main(int argc, char** argv) {
                 printf(
                     "Currently int8x4 does not support reorder for filter output feature map ('k') greater than 64\n");
             } else {
-                printf("Testing int8x4 (math in int32)\n");
-                ret += doTest<int8_t>(algo,
-                                      dimA,
-                                      padA,
-                                      convstrideA,
-                                      filterdimA,
-                                      filterFormat,
-                                      CUDNN_DATA_INT8x4,
-                                      mathType,
-                                      benchmark,
-                                      fold,
-                                      mode);
+                if (dataType == CUDNN_DATA_INT8x4) {
+                    if (verbose)
+                        printf("Testing int8x4 (math in int32)\n");
+                    warmup = true;
+                    ret += doTest<int8_t>(algo,
+                                          dimA,
+                                          padA,
+                                          convstrideA,
+                                          filterdimA,
+                                          filterFormat,
+                                          CUDNN_DATA_INT8x4,
+                                          mathType,
+                                          benchmark,
+                                          fold,
+                                          mode,
+                                          warmup,
+                                          verbose);
+                    warmup = false;
+                    ret += doTest<int8_t>(algo,
+                                          dimA,
+                                          padA,
+                                          convstrideA,
+                                          filterdimA,
+                                          filterFormat,
+                                          CUDNN_DATA_INT8x4,
+                                          mathType,
+                                          benchmark,
+                                          fold,
+                                          mode,
+                                          warmup,
+                                          verbose);
+                }
             }
 
             if (deviceVer < 75) {
                 printf("Skipping test, SM%d does not support int8x32\n", deviceVer);
             } else {
-                printf("Testing int8x32 (math in int32)\n");
-                ret += doTest<int8_t>(algo,
-                                      dimA,
-                                      padA,
-                                      convstrideA,
-                                      filterdimA,
-                                      filterFormat,
-                                      CUDNN_DATA_INT8x32,
-                                      mathType,
-                                      benchmark,
-                                      fold,
-                                      mode);
+                if (dataType == CUDNN_DATA_INT8x32) {
+                    if (verbose)
+                        printf("Testing int8x32 (math in int32)\n");
+                    warmup = true;
+                    ret += doTest<int8_t>(algo,
+                                          dimA,
+                                          padA,
+                                          convstrideA,
+                                          filterdimA,
+                                          filterFormat,
+                                          CUDNN_DATA_INT8x32,
+                                          mathType,
+                                          benchmark,
+                                          fold,
+                                          mode,
+                                          warmup,
+                                          verbose);
+                    warmup = false;
+                    ret += doTest<int8_t>(algo,
+                                          dimA,
+                                          padA,
+                                          convstrideA,
+                                          filterdimA,
+                                          filterFormat,
+                                          CUDNN_DATA_INT8x32,
+                                          mathType,
+                                          benchmark,
+                                          fold,
+                                          mode,
+                                          warmup,
+                                          verbose);
+                }
             }
         } else {
             if (algo != 0) {
