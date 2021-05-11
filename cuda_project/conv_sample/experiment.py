@@ -1,6 +1,6 @@
-import subprocess
-import itertools
 import csv
+import itertools
+import subprocess
 
 
 class Experiment:
@@ -43,7 +43,7 @@ class Experiment:
                 assert experiment['mathType'] == 1, "INT8 requires filter format 2"
             else:
                 experiment['filterFormat'] = 0
-            assert (experiment['mathType'] == 1 and experiment['dataType'] == 0) != True, "Cannot use TC for FP33"
+            assert (experiment['mathType'] == 1 and experiment['dataType'] == 0) != True, "Cannot use TC for FP32"
             for k, v in experiment.items():
                 command += ' -{}{}'.format(k, v)
             if not self.verbose:
@@ -75,13 +75,3 @@ class Experiment:
             csvwriter.writerow(self.runs[0].keys())
             for run in self.runs:
                 csvwriter.writerow(run.values())
-        
-def main():
-    base = Experiment("base", n=32)
-    base.params['mathType'] = [0, 1]
-    base.params['dataType'] = [0, 1, 2, 3]
-    base.run()
-    base.export_to_csv()
-
-if __name__ == "__main__":
-    main()
