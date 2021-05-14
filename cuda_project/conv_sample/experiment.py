@@ -5,7 +5,7 @@ import subprocess
 class Experiment:
 
     def __init__(self, name, output_dir="./results", mathType=0, dataType=0,
-                 n=1, c=512, h=64, w=64, k=64, r=8, s=8, pad_h=0, pad_w=0, u=1, v=1, filterFormat=0):
+                 n=1, c=512, h=64, w=64, k=64, r=8, s=8, pad_h=0, pad_w=0, u=1, v=1, filterFormat=0, grad=''):
 
         # Name this set of experiments, used for file export and readability
         self.name = name
@@ -30,6 +30,7 @@ class Experiment:
         self.params['u'] = [u]
         self.params['v'] = [v]
         self.params['filterFormat'] = [filterFormat]
+        self.grad = grad
 
         # Assume these values when doing mass experiments for data export
         self.verbose = False
@@ -41,17 +42,20 @@ class Experiment:
             if experiment['dataType'] > 1:
                 assert experiment['k'] <= 64, "INT8 requires output channels <=64"
                 # assert experiment['filterFormat'] == 2, "INT8 requires filter format 2"
-                experiment['filterFormat'] = 2
+                assert experiment['filterFormat'] == 2
                 assert experiment['mathType'] == 1, "INT8 requires TC"
             else:
                 assert experiment['filterFormat'] != 2
             assert (experiment['mathType'] == 1 and experiment['dataType'] == 0) != True, "Cannot use TC for FP32"
+            assert experiment['h'] == experiment['w'], "Only square images allowed"
+            assert experiment['r'] == experiment['s'], "Only square filters allowed"
             for k, v in experiment.items():
                 command += ' -{}{}'.format(k, v)
             if not self.verbose:
                 command += ' -e'
             if self.benchmark:
                 command += ' -b'
+            command += ' ' + self.grad
             return command
         except:
             return None
